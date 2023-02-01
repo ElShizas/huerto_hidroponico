@@ -1,0 +1,432 @@
+///==========================…
+#include <Adafruit_ADS1X15.h>                               // Incluimos la libreria específica para el sensor
+#include <ESP8266WiFi.h>                                                        // Comentar/Descomentar para ver mensajes de depuracion en monitor serie y/o respuesta del HTTP server
+
+// Comentar/Descomentar para conexion Fuera/Dentro de UPV
+//#define WiFi_CONNECTION_UPV
+
+#define power_pin 5                                             // Pin para alimentar el sensor de salinidad
+
+
+int sensorValueluz=0;                                           // Variable en la que almacenamos el valor digital leido
+float lightValue= 0; 
+
+#define Offset -1.20
+#define samplingInterval 20
+#define printInterval 800
+#define  ArrayLength 40                                         //número de muestras
+
+int channelValuePH=0;                                           // Canal por el que mediremos la ph
+int channelValueTemperatura=1;                                  // Definimos canal 1 para sensor de temperatura
+int channelValueHumedad = 2;                                    // Canal por el que mediremos la humedad
+int channelValueLuz= 3;                                         // Canal por el que mediremos el valor de luz
+
+int sensorValue = 0;                                            // Variable en la que almacenamos el valor digital leido
+float humidityValue = 0;                                        // Variable para almacenar el valor de humedad
+int pHArray[ArrayLength];                                       //almacena las muestras
+int pHArrayIndex = 0;
+
+const int AirValue = 18550;                                     // Medimos valor en seco
+const int WaterValue = 6500;                                   // Medimos valor en agua
+const int LED_PIN = 5; // Thing's onboard, green LED
+///=========================================================================================================================================================================
+Adafruit_ADS1115 ads1115;
+void setup() {                                                  // Inicio del Setup
+  //salinidad
+  Serial.begin(9600);                                           // Iniciamos el puerto serie
+  ads1115.begin(0x48);                                          // Inicializamos el sensor en la dirección 0x48
+  ads1115.setGain(GAIN_ONE);                                    // Ajuste de ganancia
+  int16_t adc4;
+  // ph
+  pinMode (power_pin, OUTPUT);                                  //Configuramos como pin de salida
+  int16_t adc0 = 0;                                             // Alimentamos 1a sonda con un tren de pulsos
+  // Temperatura
+  int16_t adc1 = 1;
+  //humedad
+  int16_t acd2 = 2;
+  //luz
+  int16_t adc3 = 3;
+  
+  #ifdef PRINT_DEBUG_MESSAGES
+    Serial.begin(9600);
+  #endif
+  
+  connectWiFi();
+  digitalWrite(LED_PIN, HIGH);
+
+  #ifdef PRINT_DEBUG_MESSAGES
+      Serial.print("Server_Host: ");
+      Serial.println(Server_Host);
+      Serial.print("Port: ");
+      Serial.println(String( Server_HttpPort ));
+      Serial.print("Server_Rest: ");
+      Serial.println(Rest_Host);
+  #endif
+  
+  
+}
+///==========================================================================================================================================================================
+///Sensor Humedad
+///==========================================================================================================================================================================
+float Humedad(int channelValueHumedad) {
+  sensorValue = ads1115.readADC_SingleEnded(channelValueHumedad);              //Asignamos la medida tomada mediante el sensor de humedad a la variable que lo va ha almacenar
+  humidityValue = 100 * AirValue / (AirValue - WaterValue) - sensorValue * 100 / (AirValue - WaterValue) ;    //formula para obtener el porcentaje de humedad
+  if (humidityValue > 100) {
+    Serial.print("Humedad: 100%");
+    Serial.println();
+  }
+  if (humidityValue >= 75) {
+    Serial.print("Humedad: ");
+    Serial.print(humidityValue, 2);
+    Serial.print("%");
+    Serial.print("          Húmedo");
+    delay(1000);
+    Serial.println();
+  }
+  else if (humidityValue >= 25) {
+    Serial.print("Humedada: ");
+    Serial.print(humidityValue, 2);   
+    Serial.print("%");
+    Serial.print("          Neutro");
+    delay(1000);
+    Serial.println();
+  }
+  else {
+    Serial.print("Humedad: ");
+    Serial.print(humidityValue, 2);
+    Serial.print("%");
+    Serial.print("          Árido");
+    delay(1000);
+    Serial.println();
+  }
+  //AQUÍ PONEMOS EL RETURN DEL VALOR
+  return humidityValue;
+  //
+}
+
+///==========================================================================================================================================================================
+///Sensor Salinidad
+///==========================================================================================================================================================================
+int Salinidad() {
+  int adc4;
+  digitalWrite(power_pin, HIGH);
+  delay (1000) ;
+  // Leemos cuando hay un nivel alto
+  adc4 = analogRead(A0);
+  digitalWrite(power_pin, LOW);
+  delay (1000);
+  // Presentamos lectura
+  adc4 = adc4/2;
+   Serial.print ("Porcentaje de sal= ");
+  if (adc4 > 100) {
+     Serial.println("100%, niveles excesivos de sal");
+  }
+  else if (adc4 >= 75){
+  Serial.println(adc4, DEC);
+  Serial.print ("% ");
+  Serial.println ("Mucha sal");
+  }
+  else if (adc4 >= 25){
+  Serial.println(adc4, DEC);
+  Serial.print ("% ");
+  Serial.print ("Entre el 25% y 75% de sal");
+  }
+  else if (adc4 < 25){
+  Serial.print(adc4, DEC);
+  Serial.print ("% ");
+  Serial.println ("Poca sal, revisar manualmente");
+  }
+  return adc4;
+
+  ///==========================================================================================================================================================================
+}
+///==========================================================================================================================================================================
+/// Sensor Temperatura
+///==========================================================================================================================================================================
+double Temperatura(int channelValueTemperatura){
+  int16_t adc1 = ads1115.readADC_SingleEnded(channelValueTemperatura);
+  double temperatura;
+  
+  double m = 33 * pow(10, -3);
+  double b = 0.79;
+  double vo = (adc1 * 4.096) / 32767;
+  temperatura = (((vo * 0.56)- b) / m);
+  Serial.print("Temperatura: ");
+  Serial.print(temperatura);
+  Serial.println("ºC ");
+  delay(2000);
+ return temperatura;
+}
+///==========================================================================================================================================================================
+///Sensor PH
+///==========================================================================================================================================================================
+float PH(int channelValuePH){
+  static unsigned long samplingTime = millis();
+  static unsigned long printTime = millis();
+  static float pHValue, voltage;
+
+  if(millis() - samplingTime > samplingInterval)           //el samplingTime marca el intervalo de tiempo que tarda en tomar una muestra
+  {
+     int16_t adc0 = ads1115.readADC_SingleEnded(channelValuePH);
+     //realizar una lectura del ADS111
+    //pHArray [pHArrayIndex++] = adc0;  
+    //convertir la lectura a tensión
+    voltage = ((adc0*4.096)/( pow(2,15)-1));
+  
+    pHValue = 3.5 * voltage + Offset;
+    samplingTime = millis();
+    }
+    if  (millis() - printTime > printInterval)              //cada printTime se escribe como dato en la pantalla
+    {
+      Serial.print("Nivel de ph de 1 a 14: ");
+      Serial.println(pHValue, 2);
+      printTime = millis();
+     
+      }
+     return pHValue; 
+}
+//==========================================================================================================================================================================
+// Sensor de Luz
+//==========================================================================================================================================================================
+float Luz(int channelValueLuz){
+  int16_t adc3 = ads1115.readADC_SingleEnded(channelValueLuz);
+  double luz ;
+  double r= 220;
+  double v1= (adc3*40.96)/3.2767;
+  luz= v1/r;
+  lightValue = luz ;
+  if (lightValue > 100) {
+   lightValue = 100;
+   Serial.print("Iluminación: ");
+    Serial.print(lightValue, 2);
+    Serial.print("%");
+    Serial.print("          Muy Soleado");
+    delay(1000);
+    Serial.println();
+  }
+   else if (100 >= lightValue >= 75) {
+    Serial.print("Iluminación: ");
+    Serial.print(lightValue, 2);
+    Serial.print("%");
+    Serial.print("          Soleado");
+    delay(1000);
+    Serial.println();   
+  }
+    else if (75 > lightValue > 50) {
+    Serial.print("Iluminación: ");
+    Serial.print(lightValue, 2);
+    Serial.print("%");
+    Serial.print("         Poco Nublado");
+    delay(1000);
+    Serial.println();
+  }
+    else if (50 > lightValue > 25) {
+    Serial.print("Iluminación: ");
+    Serial.print(lightValue, 2);
+    Serial.print("%");
+    Serial.print("          Bastante Nublado");
+    delay(1000);
+    Serial.println();
+  }
+    else {
+    Serial.print("Iluminación: ");
+    Serial.print(lightValue, 2);
+    Serial.print("%");
+    Serial.print("          Demasiado Oscuro");
+    delay(1000);
+    Serial.println();
+}
+
+return lightValue;
+}
+#define REST_SERVER_THINGSPEAK
+///////////////////////////////////////////////////////
+/////////////// WiFi Definitions /////////////////////
+//////////////////////////////////////////////////////
+
+#ifdef WiFi_CONNECTION_UPV //Conexion UPV
+  const char WiFiSSID[] = "GTI1";
+  const char WiFiPSK[] = "1PV.arduino.Toledo";
+#else //Conexion fuera de la UPV
+  const char WiFiSSID[] = "JAVIER";
+  const char WiFiPSK[] = "palmera24";
+#endif
+
+
+
+///////////////////////////////////////////////////////
+/////////////// SERVER Definitions /////////////////////
+//////////////////////////////////////////////////////
+
+#if defined(WiFi_CONNECTION_UPV) //Conexion UPV
+  const char Server_Host[] = "proxy.upv.es";
+  const int Server_HttpPort = 8080;
+#elif defined(REST_SERVER_THINGSPEAK) //Conexion fuera de la UPV
+  const char Server_Host[] = "api.thingspeak.com";
+  const int Server_HttpPort = 80;
+#else
+  const char Server_Host[] = "dweet.io";
+  const int Server_HttpPort = 80;
+#endif
+
+WiFiClient client;
+
+///////////////////////////////////////////////////////
+/////////////// HTTP REST Connection ////////////////
+//////////////////////////////////////////////////////
+
+#ifdef REST_SERVER_THINGSPEAK 
+  const char Rest_Host[] = "api.thingspeak.com";
+  String MyWriteAPIKey="NOC5QD3TLFQWQTCS"; // Escribe la clave de tu canal ThingSpeak
+#else 
+  const char Rest_Host[] = "dweet.io";
+  String MyWriteAPIKey="PruebaGTI"; // Escribe la clave de tu canal Dweet
+#endif
+
+#define NUM_FIELDS_TO_SEND 5 //Numero de medidas a enviar al servidor REST (Entre 1 y 8)
+
+/////////////////////////////////////////////////////
+/////////////// WiFi Connection ////////////////
+//////////////////////////////////////////////////////
+
+void connectWiFi()
+{
+  byte ledStatus = LOW;
+
+  #ifdef PRINT_DEBUG_MESSAGES
+    Serial.print("MAC: ");
+    Serial.println(WiFi.macAddress());
+  #endif
+  
+  WiFi.begin(WiFiSSID, WiFiPSK);
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    // Blink the LED
+    digitalWrite(LED_PIN, ledStatus); // Write LED high/low
+    ledStatus = (ledStatus == HIGH) ? LOW : HIGH;
+    #ifdef PRINT_DEBUG_MESSAGES
+       Serial.println(".");
+    #endif
+    delay(500);
+  }
+  #ifdef PRINT_DEBUG_MESSAGES
+     Serial.println( "WiFi Connected" );
+     Serial.println(WiFi.localIP()); // Print the IP address
+  #endif
+}
+
+/////////////////////////////////////////////////////
+/////////////// HTTP POST  ThingSpeak////////////////
+//////////////////////////////////////////////////////
+
+void HTTPPost(String fieldData[], int numFields){
+
+// Esta funcion construye el string de datos a enviar a ThingSpeak mediante el metodo HTTP POST
+// La funcion envia "numFields" datos, del array fieldData.
+// Asegurate de ajustar numFields al número adecuado de datos que necesitas enviar y activa los campos en tu canal web
+  
+    if (client.connect( Server_Host , Server_HttpPort )){
+       
+        // Construimos el string de datos. Si tienes multiples campos asegurate de no pasarte de 1440 caracteres
+   
+        String PostData= "api_key=" + MyWriteAPIKey ;
+        for ( int field = 1; field < (numFields + 1); field++ ){
+            PostData += "&field" + String( field ) + "=" + fieldData[ field ];
+        }     
+        
+        // POST data via HTTP
+        #ifdef PRINT_DEBUG_MESSAGES
+            Serial.println( "Connecting to ThingSpeak for update..." );
+        #endif
+        client.println( "POST http://" + String(Rest_Host) + "/update HTTP/1.1" );
+        client.println( "Host: " + String(Rest_Host) );
+        client.println( "Connection: close" );
+        client.println( "Content-Type: application/x-www-form-urlencoded" );
+        client.println( "Content-Length: " + String( PostData.length() ) );
+        client.println();
+        client.println( PostData );
+        #ifdef PRINT_DEBUG_MESSAGES
+            Serial.println( PostData );
+            Serial.println();
+            //Para ver la respuesta del servidor
+            #ifdef PRINT_HTTP_RESPONSE
+              delay(500);
+              Serial.println();
+              while(client.available()){String line = client.readStringUntil('\r');Serial.print(line); }
+              Serial.println();
+              Serial.println();
+            #endif
+        #endif
+    }
+}
+
+////////////////////////////////////////////////////
+/////////////// HTTP GET  ////////////////
+//////////////////////////////////////////////////////
+
+void HTTPGet(String fieldData[], int numFields){
+  
+// Esta funcion construye el string de datos a enviar a ThingSpeak o Dweet mediante el metodo HTTP GET
+// La funcion envia "numFields" datos, del array fieldData.
+// Asegurate de ajustar "numFields" al número adecuado de datos que necesitas enviar y activa los campos en tu canal web
+  
+    if (client.connect( Server_Host , Server_HttpPort )){
+           #ifdef REST_SERVER_THINGSPEAK 
+              String PostData= "GET https://api.thingspeak.com/update?api_key=";
+              PostData= PostData + MyWriteAPIKey ;
+           #else 
+              String PostData= "GET http://dweet.io/dweet/for/";
+              PostData= PostData + MyWriteAPIKey +"?" ;
+           #endif
+           
+           for ( int field = 1; field < (numFields + 1); field++ ){
+              PostData += "&field" + String( field ) + "=" + fieldData[ field ];
+           }
+          
+           
+           #ifdef PRINT_DEBUG_MESSAGES
+              Serial.println( "Connecting to Server for update..." );
+           #endif
+           client.print(PostData);         
+           client.println(" HTTP/1.1");
+           client.println("Host: " + String(Rest_Host)); 
+           client.println("Connection: close");
+           client.println();
+           #ifdef PRINT_DEBUG_MESSAGES
+              Serial.println( PostData );
+              Serial.println();
+              //Para ver la respuesta del servidor
+              #ifdef PRINT_HTTP_RESPONSE
+                delay(500);
+                Serial.println();
+                while(client.available()){String line = client.readStringUntil('\r');Serial.print(line); }
+                Serial.println();
+                Serial.println();
+              #endif
+           #endif  
+    }
+}
+
+///==========================================================================================================================================================================
+void loop() {
+  int adc0, adc1, adc2, adc3, adc4;
+  float SENSOR_HUMEDAD = Humedad(channelValueHumedad);
+  int SENSOR_SALINIDAD = Salinidad();
+  float SENSOR_TEMPERATURA = Temperatura(channelValueTemperatura);
+  float SENSOR_PH= PH(channelValuePH);
+  float SENSOR_LUZ= Luz(channelValueLuz);
+  
+  String Data[ NUM_FIELDS_TO_SEND + 1]; // Podemos enviar hasta 8 datos
+
+  Data[1] = String(Humedad(channelValueHumedad));
+
+  Data[2] = String(Salinidad());
+
+  Data[3] = String(Temperatura(channelValueTemperatura));
+
+  Data[4] = String(PH(channelValuePH));
+
+  Data[5] = String(Luz(channelValueLuz));
+  HTTPGet( Data, NUM_FIELDS_TO_SEND );
+}
